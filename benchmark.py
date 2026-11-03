@@ -3,6 +3,7 @@ import json
 import math
 import os
 import statistics
+import tempfile
 import subprocess
 import threading
 import time
@@ -33,6 +34,18 @@ ITERATIONS = int(os.getenv("BENCH_ITERATIONS", "100"))
 WARMUP = int(os.getenv("BENCH_WARMUP", "10"))
 TIMEOUT = int(os.getenv("BENCH_TIMEOUT", "60"))
 RESOURCE_INTERVAL = float(os.getenv("RESOURCE_INTERVAL", "1.0"))
+
+# Spark / HDFS configuration
+SPARK_CONTAINER = os.getenv("SPARK_CONTAINER", "glc-spark")
+HDFS_PARQUET_PATH = os.getenv(
+    "HDFS_PARQUET_PATH",
+    "hdfs://hdfs-namenode:9000/glc_data/glc_baseline.parquet",
+)
+SPARK_MASTER = os.getenv("SPARK_MASTER", "local[2]")
+SPARK_WRITE_BASE = os.getenv(
+    "SPARK_WRITE_BASE",
+    "hdfs://hdfs-namenode:9000/glc_data/benchmark_spark_write",
+)
 
 RUN_ID = uuid.uuid4().hex[:10]
 TEMP_CASSANDRA_TABLE = f"bench_landslide_{RUN_ID}"
@@ -199,6 +212,233 @@ def docker_stats_monitor(container_names):
         RESOURCE_STOP.wait(RESOURCE_INTERVAL)
 
 
+
+
+# ----------------------------- SPARK WORKER -----------------------------
+
+SPARK_WORKER_SOURCE = r"""
+import json
+import sys
+import time
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+
+parquet_path, output_path, iterations, warmup, write_base = sys.argv[1:6]
+iterations = int(iterations)
+warmup = int(warmup)
+
+spark = (
+    SparkSession.builder
+    .appName("GLC-Integrated-Benchmark")
+    .master("local[2]")
+    .config("spark.hadoop.fs.defaultFS", "hdfs://hdfs-namenode:9000")
+    .config("spark.sql.shuffle.partitions", "2")
+    .getOrCreate()
+)
+spark.sparkContext.setLogLevel("ERROR")
+
+def delete_hdfs_path(path_string):
+    jvm = spark.sparkContext._jvm
+    hadoop_conf = spark.sparkContext._jsc.hadoopConfiguration()
+    path = jvm.org.apache.hadoop.fs.Path(path_string)
+    fs = path.getFileSystem(hadoop_conf)
+    if fs.exists(path):
+        fs.delete(path, True)
+
+def measure(operation, fn, cleanup=None):
+    # Warm-up is excluded from recorded measurements.
+    for i in range(warmup):
+        fn("warmup_" + str(i))
+        if cleanup:
+            cleanup("warmup_" + str(i))
+
+    values = []
+    for i in range(1, iterations + 1):
+        token = "iteration_" + str(i)
+        start = time.perf_counter()
+        fn(token)
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        values.append(elapsed_ms)
+        if cleanup:
+            cleanup(token)
+    return values
+
+try:
+    # Discover representative values from the actual Parquet schema/data.
+    base_df = spark.read.parquet(parquet_path)
+    columns = set(base_df.columns)
+    if "country_code" not in columns:
+        raise RuntimeError(
+            "Kolom country_code tidak ditemukan di Parquet. Kolom tersedia: "
+            + ", ".join(base_df.columns)
+        )
+    if "event_year" not in columns:
+        raise RuntimeError(
+            "Kolom event_year tidak ditemukan di Parquet. Kolom tersedia: "
+            + ", ".join(base_df.columns)
+        )
+
+    country_value = (
+        base_df.select("country_code")
+        .where(F.col("country_code").isNotNull())
+        .first()[0]
+    )
+    year_value = (
+        base_df.select("event_year")
+        .where(F.col("event_year").isNotNull())
+        .first()[0]
+    )
+
+    results = {}
+
+    # 1. Read entire Parquet dataset: read + count each iteration.
+    results["read_all_parquet"] = measure(
+        "read_all_parquet",
+        lambda token: spark.read.parquet(parquet_path).count()
+    )
+
+    # 2. Filter by country. Each iteration reads the Parquet data from HDFS.
+    results["filter_by_country"] = measure(
+        "filter_by_country",
+        lambda token: (
+            spark.read.parquet(parquet_path)
+            .filter(F.col("country_code") == F.lit(country_value))
+            .count()
+        )
+    )
+
+    # 3. Filter by year.
+    results["filter_by_year"] = measure(
+        "filter_by_year",
+        lambda token: (
+            spark.read.parquet(parquet_path)
+            .filter(F.col("event_year") == F.lit(year_value))
+            .count()
+        )
+    )
+
+    # 4. Aggregation by year.
+    results["aggregation_by_year"] = measure(
+        "aggregation_by_year",
+        lambda token: (
+            spark.read.parquet(parquet_path)
+            .groupBy("event_year")
+            .count()
+            .collect()
+        )
+    )
+
+    # 5. Write full Parquet dataset to a unique HDFS path per iteration.
+    def write_one(token):
+        output_dir = write_base.rstrip("/") + "/" + token
+        spark.read.parquet(parquet_path).write.mode("overwrite").parquet(output_dir)
+
+    def cleanup_one(token):
+        delete_hdfs_path(write_base.rstrip("/") + "/" + token)
+
+    results["write_parquet"] = measure(
+        "write_parquet",
+        write_one,
+        cleanup=cleanup_one
+    )
+
+    # Return measurement arrays to the orchestrating Python script.
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "operations": results,
+            "country_filter_value": str(country_value),
+            "year_filter_value": str(year_value),
+            "columns": base_df.columns,
+        }, f)
+
+finally:
+    # Remove only this benchmark's temporary output folder.
+    try:
+        delete_hdfs_path(write_base)
+    except Exception:
+        pass
+    spark.stop()
+"""
+
+
+def run_spark_benchmark():
+    """Run the embedded PySpark worker inside the existing Spark container."""
+    print("\\n[5/6] HDFS + PARQUET + SPARK BENCHMARK")
+    print(f"  Spark container : {SPARK_CONTAINER}")
+    print(f"  Parquet source  : {HDFS_PARQUET_PATH}")
+    print(f"  Iterations      : {ITERATIONS}; warm-up: {WARMUP}")
+
+    # A temporary worker is generated from this single benchmark_full.py file.
+    with tempfile.TemporaryDirectory(prefix="glc_spark_bench_") as temp_dir:
+        worker_local = Path(temp_dir) / "spark_benchmark_worker.py"
+        result_local = Path(temp_dir) / "spark_benchmark_result.json"
+        worker_container = "/tmp/glc_spark_benchmark_worker.py"
+        result_container = "/tmp/glc_spark_benchmark_result.json"
+
+        worker_local.write_text(SPARK_WORKER_SOURCE, encoding="utf-8")
+
+        subprocess.run(
+            ["docker", "inspect", SPARK_CONTAINER],
+            check=True, capture_output=True, text=True, timeout=20,
+        )
+        subprocess.run(
+            ["docker", "cp", str(worker_local), f"{SPARK_CONTAINER}:{worker_container}"],
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+
+        command = [
+            "docker", "exec", SPARK_CONTAINER,
+            "/opt/spark/bin/spark-submit",
+            "--master", SPARK_MASTER,
+            worker_container,
+            HDFS_PARQUET_PATH,
+            result_container,
+            str(ITERATIONS),
+            str(WARMUP),
+            SPARK_WRITE_BASE,
+        ]
+        completed = subprocess.run(
+            command, capture_output=True, text=True, timeout=TIMEOUT * max(ITERATIONS, 10),
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(
+                "Benchmark Spark gagal. Output Spark:\\n"
+                + (completed.stdout[-12000:] if completed.stdout else "")
+                + "\\nError Spark:\\n"
+                + (completed.stderr[-16000:] if completed.stderr else "")
+            )
+
+        subprocess.run(
+            ["docker", "cp", f"{SPARK_CONTAINER}:{result_container}", str(result_local)],
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+        result = json.loads(result_local.read_text(encoding="utf-8"))
+
+    print("  Kolom Parquet    :", ", ".join(result.get("columns", [])))
+    print("  Contoh negara    :", result.get("country_filter_value"))
+    print("  Contoh tahun     :", result.get("year_filter_value"))
+
+    for operation, values in result["operations"].items():
+        print(f"  Spark: {operation} ({len(values)} iterasi)")
+        for index, latency in enumerate(values, start=1):
+            record_result("5_spark", operation, "HDFS_Parquet_Spark", index, latency)
+
+        total_seconds = sum(values) / 1000.0
+        SUMMARIES.append({
+            "stage": "5_spark",
+            "operation": operation,
+            "database": "HDFS_Parquet_Spark",
+            "iterations": len(values),
+            "avg_ms": statistics.mean(values),
+            "median_ms": statistics.median(values),
+            "min_ms": min(values),
+            "max_ms": max(values),
+            "p95_ms": percentile(values, 0.95),
+            "stddev_ms": statistics.stdev(values) if len(values) > 1 else 0,
+            "throughput_ops_sec": len(values) / total_seconds if total_seconds else 0,
+        })
+
+
 # ----------------------------- CASSANDRA / ES SETUP -----------------------------
 
 def main():
@@ -211,7 +451,7 @@ def main():
     update_original_notes = sample["notes"]
 
     print("=" * 72)
-    print("BENCHMARK CASSANDRA vs ELASTICSEARCH")
+    print("BENCHMARK CASSANDRA vs ELASTICSEARCH vs HDFS + PARQUET + SPARK")
     print(f"Dataset valid       : {len(rows)} baris")
     print(f"Iterasi             : {ITERATIONS}; warm-up: {WARMUP}")
     print(f"Cassandra           : {CASSANDRA_HOST}:{CASSANDRA_PORT}/{KEYSPACE}.{TABLE}")
@@ -289,9 +529,10 @@ def main():
         # Start resource sampling (Docker container names can be overridden).
         cass_container = os.getenv("CASSANDRA_CONTAINER", "glc-cassandra")
         es_container = os.getenv("ELASTICSEARCH_CONTAINER", "glc-elasticsearch")
+        spark_container = os.getenv("SPARK_CONTAINER", "glc-spark")
         monitor = threading.Thread(
             target=docker_stats_monitor,
-            args=([cass_container, es_container],),
+            args=([cass_container, es_container, spark_container],),
             daemon=True,
         )
         monitor.start()
@@ -505,8 +746,11 @@ def main():
         run_repeated("4_query_special", "geo_distance_search", "Elasticsearch", es_geo)
         run_repeated("4_query_special", "aggregations", "Elasticsearch", es_aggregation)
 
-        # ============================ 5. RESOURCE ============================
-        print("\n[5/5] RESOURCE UTILIZATION")
+        # ============================ 5. SPARK ============================
+        run_spark_benchmark()
+
+        # ============================ 6. RESOURCE ============================
+        print("\n[6/6] RESOURCE UTILIZATION")
         # Keep monitor alive briefly to collect a final sample.
         time.sleep(max(RESOURCE_INTERVAL, 1.1))
         RESOURCE_STOP.set()
@@ -568,7 +812,7 @@ def main():
             print(
                 "\nPERINGATAN: Docker stats tidak menghasilkan sampel. "
                 "Pastikan Docker CLI aktif dan nama container benar. "
-                "Atur CASSANDRA_CONTAINER dan ELASTICSEARCH_CONTAINER bila perlu."
+                "Pastikan Docker CLI aktif dan nama container benar."
             )
         print("\nBenchmark selesai.")
 

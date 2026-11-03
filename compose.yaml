@@ -131,6 +131,27 @@ services:
           cpus: '2.0'
           memory: 4G
 
+  # 6. Big Data Processing: Apache Spark
+  spark:
+    image: apache/spark:3.5.3
+    container_name: glc-spark
+    hostname: spark
+    command: ["bash", "-c", "sleep infinity"]
+    depends_on:
+      - hdfs-namenode
+      - hdfs-datanode
+    environment:
+      - HADOOP_CONF_DIR=/opt/hadoop/etc/hadoop
+    volumes:
+      - ./benchmark_spark:/opt/benchmark
+    networks:
+      - glc_bridge_net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+
 # Konfigurasi Volume Persistensi
 volumes:
   cassandra_data:
