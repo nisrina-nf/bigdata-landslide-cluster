@@ -1,0 +1,44 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "5s"
+  },
+  "mappings": {
+    "properties": {
+      "source_name": { "type": "keyword" },
+      "source_link": { "type": "keyword", "index": false },
+      "event_id": { "type": "long" },
+      "event_date": { "type": "date" },
+      "event_year": { "type": "integer" },
+      "event_time": { "type": "keyword" },
+      "event_title": { "type": "text" },
+      "event_description": { "type": "text" },
+      "location_description": { "type": "text" },
+      "location_accuracy": { "type": "keyword" },
+      "landslide_category": { "type": "keyword" },
+      "landslide_trigger": { "type": "keyword" },
+      "landslide_size": { "type": "keyword" },
+      "landslide_setting": { "type": "keyword" },
+      "fatality_count": { "type": "integer" },
+      "injury_count": { "type": "integer" },
+      "storm_name": { "type": "keyword" },
+      "photo_link": { "type": "keyword", "index": false },
+      "notes": { "type": "text" },
+      "event_import_source": { "type": "keyword" },
+      "event_import_id": { "type": "double" },
+      "country_name": { "type": "keyword" },
+      "country_code": { "type": "keyword" },
+      "admin_division_name": { "type": "keyword" },
+      "admin_division_population": { "type": "long" },
+      "gazeteer_closest_point": { "type": "keyword" },
+      "gazeteer_distance": { "type": "double" },
+      "submitted_date": { "type": "date" },
+      "created_date": { "type": "date" },
+      "last_edited_date": { "type": "date" },
+      "longitude": { "type": "double" },
+      "latitude": { "type": "double" },
+      "geo_point": { "type": "geo_point" }
+    }
+  }
+}

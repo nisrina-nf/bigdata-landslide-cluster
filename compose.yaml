@@ -1,0 +1,148 @@
+version: '3.8'
+
+services:
+  # 1. Primary Data Store: Apache Cassandra
+  cassandra-node:
+    image: cassandra:4.1
+    container_name: glc-cassandra
+    hostname: cassandra-node
+    ports:
+      - "9042:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=GLC_Disaster_Cluster
+      - CASSANDRA_DC=dc1
+      - CASSANDRA_RACK=rack1
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+      - MAX_HEAP_SIZE=2G
+      - HEAP_NEWSIZE=512M
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    networks:
+      - glc_bridge_net
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # 2. Search & Aggregation Engine: Elasticsearch
+  elasticsearch-node:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: glc-elasticsearch
+    hostname: elasticsearch-node
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    environment:
+      - node.name=es-node-1
+      - cluster.name=glc-monitoring-cluster
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms2g -Xmx2g"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - glc_bridge_net
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200 >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # 3. Monitoring & Geospatial Visualization: Kibana
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: glc-kibana
+    hostname: kibana
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch-node:9200
+    depends_on:
+      elasticsearch-node:
+        condition: service_healthy
+    networks:
+      - glc_bridge_net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+
+  # 4. Baseline Storage: Hadoop HDFS NameNode
+  hdfs-namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: glc-hdfs-namenode
+    hostname: hdfs-namenode
+    ports:
+      - "9870:9870" # Web UI HDFS untuk melihat file & blok
+      - "9000:9000" # Port komunikasi IPC HDFS
+    environment:
+      - CLUSTER_NAME=glc_hdfs_cluster
+      - CORE_CONF_fs_defaultFS=hdfs://hdfs-namenode:9000
+      - HDFS_CONF_dfs_webhdfs_enabled=true
+      - HDFS_CONF_dfs_permissions_enabled=false
+    volumes:
+      - hdfs_namenode_data:/hadoop/dfs/name
+    networks:
+      - glc_bridge_net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+
+  # 5. Baseline Storage: Hadoop HDFS DataNode
+  hdfs-datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: glc-hdfs-datanode
+    hostname: hdfs-datanode
+    ports:
+      - "9864:9864" # Port transfer data WebHDFS
+    environment:
+      - SERVICE_PRECONDITION=hdfs-namenode:9870
+      - CORE_CONF_fs_defaultFS=hdfs://hdfs-namenode:9000
+      - HDFS_CONF_dfs_webhdfs_enabled=true
+      - HDFS_CONF_dfs_permissions_enabled=false
+    depends_on:
+      - hdfs-namenode
+    volumes:
+      - hdfs_datanode_data:/hadoop/dfs/data
+    networks:
+      - glc_bridge_net
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+
+# Konfigurasi Volume Persistensi
+volumes:
+  cassandra_data:
+    driver: local
+  elasticsearch_data:
+    driver: local
+  hdfs_namenode_data:
+    driver: local
+  hdfs_datanode_data:
+    driver: local
+    
+# Konfigurasi Isolasi Jaringan Bridge
+networks:
+  glc_bridge_net:
+    driver: bridge

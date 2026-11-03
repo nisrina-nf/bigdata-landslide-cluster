@@ -1,0 +1,4 @@
+pandas
+cassandra-driver
+requests
+pyarrow

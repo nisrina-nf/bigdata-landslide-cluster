@@ -1,0 +1,13 @@
+# Virtual Environment Python
+venv/
+.venv/
+__pycache__/
+
+# File hasil generate / skala besar (100x)
+*.parquet
+*100x*.csv
+*100x*.json
+
+# File sistem OS
+.DS_Store
+Thumbs.db
