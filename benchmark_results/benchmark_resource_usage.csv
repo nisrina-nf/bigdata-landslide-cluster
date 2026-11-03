@@ -1,0 +1,15 @@
+﻿timestamp,container,cpu_percent,memory_usage,memory_percent
+2026-11-03T20:23:12,glc-cassandra,88.32,2.648GiB / 4GiB,66.20
+2026-11-03T20:23:12,glc-elasticsearch,20.87,2.768GiB / 4GiB,69.20
+2026-11-03T20:23:17,glc-cassandra,56.98,2.658GiB / 4GiB,66.45
+2026-11-03T20:23:17,glc-elasticsearch,16.29,2.768GiB / 4GiB,69.20
+2026-11-03T20:23:22,glc-cassandra,75.16,2.666GiB / 4GiB,66.64
+2026-11-03T20:23:22,glc-elasticsearch,26.14,2.769GiB / 4GiB,69.23
+2026-11-03T20:23:26,glc-cassandra,79.12,2.67GiB / 4GiB,66.75
+2026-11-03T20:23:26,glc-elasticsearch,57.81,2.769GiB / 4GiB,69.22
+2026-11-03T20:23:31,glc-cassandra,24.61,2.67GiB / 4GiB,66.75
+2026-11-03T20:23:31,glc-elasticsearch,51.03,2.769GiB / 4GiB,69.23
+2026-11-03T20:23:36,glc-cassandra,1.43,2.67GiB / 4GiB,66.75
+2026-11-03T20:23:36,glc-elasticsearch,50.17,2.77GiB / 4GiB,69.24
+2026-11-03T20:23:40,glc-cassandra,1.66,2.67GiB / 4GiB,66.75
+2026-11-03T20:23:40,glc-elasticsearch,1.72,2.77GiB / 4GiB,69.24
