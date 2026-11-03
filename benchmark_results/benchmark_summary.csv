@@ -1,0 +1,5 @@
+﻿operation,database,iterations,avg_ms,median_ms,min_ms,max_ms,p95_ms,stddev_ms,throughput_ops_sec
+partition_filter,Cassandra,100,14.823754,15.0258,4.7094,33.1227,20.4262,4.235655,67.459295
+partition_filter,Elasticsearch,100,52.219005,50.6859,47.2448,62.1415,57.3856,3.233466,19.150116
+primary_key_lookup,Cassandra,100,12.693325,14.41195,2.9803,24.5446,17.0457,4.054963,78.781564
+primary_key_lookup,Elasticsearch,100,50.030675,49.9462,6.4515,63.223,55.4088,5.533992,19.987738
